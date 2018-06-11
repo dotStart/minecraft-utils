@@ -1,0 +1,267 @@
+#!/bin/bash
+#
+# Minecraft Server Download Script
+# --------------------------------
+# Retrieves the dedicated server jars for arbitrary server versions from the
+# launcher metadata service.
+#
+# Dependencies: curl, jq
+#
+# License
+# -------
+# Copyright 2018 Johannes Donath <johannesd@torchmind.com>
+# and other copyright owners as documented in the project's IP log.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+function printLog() {
+  if [ -z "$SILENT_MODE" ]; then
+    echo -e ${@:2} "$1"
+  fi
+}
+
+function printError() {
+  echo -e "\e[31mError:\e[0m $1"
+}
+
+function checkError() {
+  if [ "$1" -ne "0" ]; then
+    printLog "\e[31mFailed (command exited with code $1)\e[0m"
+    exit 1
+  else
+    printLog "\e[32mSuccess\e[0m"
+  fi
+}
+
+function fetchRootManifest() {
+  curl -s https://launchermeta.mojang.com/mc/game/version_manifest.json
+  return $?
+}
+
+function getVersionManifestUrl() {
+  echo "${1}" | jq -e -r ".versions[] | select(.id == \"${2}\") | .url"
+}
+
+function getLatestStable() {
+  echo "${1}" | jq -e -r ".latest | .release"
+  return $?
+}
+
+function getLatestSnapshot() {
+  echo "${1}" | jq -e -r ".latest | .snapshot"
+  return $?
+}
+
+function showLatestRelease() {
+  printLog "Contacting Mojang servers ... " -n
+  local MANIFEST=`fetchRootManifest`
+  checkError $?
+
+  printLog "Locating latest stable release ... " -n
+  local RELEASE=`getLatestStable "${MANIFEST}"`
+  checkError $?
+
+  if [ -z "$SILENT_MODE" ]; then
+    echo ""
+    echo -e "Latest \e[32mstable\e[0m release: \e[94m${RELEASE}\e[0m"
+  else
+    echo "${RELEASE}"
+  fi
+}
+
+function showLatestSnapshot() {
+  printLog "Contacting Mojang servers ... " -n
+  local MANIFEST=`fetchRootManifest`
+  checkError $?
+
+  printLog "Locating latest stable release ... " -n
+  local RELEASE=`getLatestSnapshot "${MANIFEST}"`
+  checkError $?
+
+  if [ -z "$SILENT_MODE" ]; then
+    echo ""
+    echo -e "Latest \e[33msnapshot\e[0m release: \e[94m${RELEASE}\e[0m"
+  else
+    echo "${RELEASE}"
+  fi
+}
+
+function fetchVersionManifest() {
+  local MANIFEST_URL=`getVersionManifestUrl "${1}" "${2}"`
+
+  local RET=$?
+  if [ "$RET" -ne "0" ]; then
+    return $RET
+  fi
+
+  curl -s "${MANIFEST_URL}"
+  return $?
+}
+
+function fetchServerArchive() {
+  local ARCHIVE_URL=`echo "${1}" | jq -e -r ".downloads | .server | .url"`
+
+  local RET=$?
+  if [ "$RET" -ne "0" ]; then
+    return $RET
+  fi
+
+  curl -Lso "${2}" "${ARCHIVE_URL}"
+  return $?
+}
+
+function verifyServerArchive() {
+  local ARCHIVE_CHECKSUM=`echo "${1}" | jq -e -r ".downloads | .server | .sha1"`
+
+  local RET=$?
+  if [ "$RET" -ne "0" ]; then
+    return $RET
+  fi
+
+  local ACTUAL_CHECKSUM=`sha1sum -b "${2}" | awk '{print $1}'`
+  if [ "${ARCHIVE_CHECKSUM}" != "${ACTUAL_CHECKSUM}" ]; then
+    return 128
+  else
+    return 0
+  fi
+}
+
+function downloadVersion() {
+  if [ "$#" -ne "2" ]; then
+    printError "Command requires exactly two parameters"
+    exit 1
+  fi
+
+  printLog "Contacting Mojang servers ... " -n
+  local MANIFEST=`fetchRootManifest`
+  checkError $?
+
+  VERSION=$1
+  if [ "$1" == "latest" ]; then
+    VERSION=`getLatestStable "${MANIFEST}"`
+  fi
+  if [ "$1" == "latest-snapshot" ]; then
+    VERSION=`getLatestSnapshot "${MANIFEST}"`
+  fi
+  printLog "Selected Minecraft version: \e[94m${VERSION}\e[0m"
+
+  printLog "Fetching version manifest ... " -n
+  local VERSION_MANIFEST=`fetchVersionManifest "${MANIFEST}" "${VERSION}"`
+  checkError $?
+
+  printLog "Fetching server archive ... " -n
+  fetchServerArchive "${VERSION_MANIFEST}" "${2}"
+  checkError $?
+
+  printLog "Verifying server archive ... " -n
+  verifyServerArchive "${VERSION_MANIFEST}" "${2}"
+  checkError $?
+}
+
+function verifyVersion() {
+  if [ "$#" -ne "2" ]; then
+    printError "Command requires exactly two parameters"
+    exit 1
+  fi
+
+  printLog "Contacting Mojang servers ... " -n
+  local MANIFEST=`fetchRootManifest`
+  checkError $?
+
+  VERSION=$1
+  if [ "$1" == "latest" ]; then
+    VERSION=`getLatestStable "${MANIFEST}"`
+  fi
+  if [ "$1" == "latest-snapshot" ]; then
+    VERSION=`getLatestSnapshot "${MANIFEST}"`
+  fi
+  printLog "Selected Minecraft version: \e[94m${VERSION}\e[0m"
+
+  printLog "Fetching version manifest ... " -n
+  local VERSION_MANIFEST=`fetchVersionManifest "${MANIFEST}" "${VERSION}"`
+  checkError $?
+
+  printLog "Verifying server archive ... " -n
+  verifyServerArchive "${VERSION_MANIFEST}" "${2}"
+  checkError $?
+}
+
+function displayHelp() {
+  echo -e "\e[94mUsage:\e[0m ${0} <command>"
+  echo ""
+  echo "The following commands are currently supported:"
+  echo ""
+  echo -e "  \e[32mlatest-release\e[0m"
+  echo "    Displays the latest stable release."
+  echo ""
+  echo -e "  \e[32mlatest-snapshot\e[0m"
+  echo "    Displays the latest snapshot release."
+  echo ""
+  echo -e "  \e[32mdownload\e[0m <version> <file>"
+  echo "    Downloads the server executable for a given version number."
+  echo -e "    The version number may alternatively be substituted with \e[33mlatest\e[0m and"
+  echo -e "    \e[33mlatest-snapshot\e[0m to retrieve the latest versions of the respective"
+  echo "    release channel."
+  echo ""
+  echo -e "  \e[32mverify\e[0m <version> <file>"
+  echo "    Verfies the integrity of a given server executable."
+  echo ""
+  echo -e "  \e[32mhelp\e[0m"
+  echo "    Displays this help message."
+  echo ""
+  echo -e "Additionally, you may set the \e[33mSILENT_MODE\e[0m environment variable to suppress"
+  echo "the log outputs when writing scripts."
+  echo ""
+  echo -e "This script is proudly provided under the terms of the \e[32mApache License, Version 2.0\e[0m"
+  echo -e "Copyright (C) 2018 Johannes Donath and other copyright owners as documented in the project's IP log"
+}
+
+if [ "$#" -eq "0" ]; then
+  displayHelp
+  exit 0
+fi
+
+JQ_VERSION=`jq --version`
+if [ "$?" -ne "0" ]; then
+  printError "jq is not installed"
+  exit 256
+fi
+
+CURL_VERSION=`curl --version`
+if [ "$?" -ne "0" ]; then
+  printError "curl is not installed"
+  exit 256
+fi
+
+case "$1" in
+  latest-release)
+    showLatestRelease
+    ;;
+  latest-snapshot)
+    showLatestSnapshot
+    ;;
+  download)
+    downloadVersion ${@:2}
+    ;;
+  verify)
+    verifyVersion ${@:2}
+    ;;
+  help)
+    displayHelp
+    ;;
+  *)
+    printError "Invalid command"
+    echo ""
+    displayHelp $@
+    ;;
+esac
